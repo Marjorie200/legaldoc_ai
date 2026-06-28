@@ -252,11 +252,11 @@ export default function App() {
         formData.append("openrouter_key", "")
         formData.append("groq_key", import.meta.env.VITE_GROQ_API_KEY || "")
 
-        const response = await fetch("http://127.0.0.1:8000/remplir-pdf", {
+        const response = await fetch("https://Marjorieyunxi-legaldoc-backend.hf.space/remplir-pdf", {
           method: "POST",
           body: formData,
         })
-
+        
         if (!response.ok) {
           let message = await response.text()
           try { message = JSON.parse(message).detail || message } catch { /* texte brut */ }
