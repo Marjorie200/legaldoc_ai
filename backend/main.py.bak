@@ -1,0 +1,208 @@
+from fastapi import FastAPI, UploadFile, File, Form
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+import fitz
+import json
+import io
+import re
+import httpx
+
+app = FastAPI()
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+PATTERN_BLANC = r'[….]{3,}'
+
+# Mapping exact des spans → champs
+# Basé sur l'analyse réelle du PDF
+MAPPING_SPANS = [
+    # (pattern du texte du span, champ à utiliser, traitement)
+    (r"M, Mme, Mlle[….]+Né \(e\) le", "BAILLEUR_OU_LOCATAIRE", "nom"),
+    (r"Demeurant à[….]+\s*propriétaire", "SKIP", None),
+    (r"Demeurant à[….]+\s*$", "SKIP", None),
+    (r"^[….]+\s*$", "Adresse du bien", "direct"),
+    (r"Bâtiment[….]+étage", "SKIP", None),
+    (r"durée de [….]+ans à courir le[….]+et", "DUREE_DATE", "duree_date"),
+    (r"terminant le [….]+sous réserve", "Date de fin", "dans_texte"),
+    (r"somme de [….]+DH au locataire", "Loyer mensuel \(DH\)", "dans_texte"),
+    (r"en toutes lettres\)[….]+", "Loyer mensuel \(DH\)", "en_lettres"),
+    (r"garantie versé par le BAILLEUR sera de [….]+DH", "SKIP", None),
+]
+
+def nombre_en_lettres(n):
+    units = ["", "un", "deux", "trois", "quatre", "cinq", "six", "sept", "huit", "neuf",
+             "dix", "onze", "douze", "treize", "quatorze", "quinze", "seize",
+             "dix-sept", "dix-huit", "dix-neuf"]
+    tens = ["", "", "vingt", "trente", "quarante", "cinquante",
+            "soixante", "soixante", "quatre-vingt", "quatre-vingt"]
+    if n == 0: return "zéro"
+    result = ""
+    if n >= 1000:
+        m = n // 1000
+        result += "mille" if m == 1 else nombre_en_lettres(m) + " mille"
+        n %= 1000
+        if n: result += " "
+    if n >= 100:
+        m = n // 100
+        result += "cent" if m == 1 else units[m] + " cent"
+        n %= 100
+        if n: result += " "
+    if n >= 20:
+        t, u = n // 10, n % 10
+        if t == 7: result += "soixante-" + units[10 + u]
+        elif t == 9: result += "quatre-vingt-" + units[10 + u]
+        else:
+            result += tens[t]
+            if u == 1 and t != 8: result += "-et-un"
+            elif u: result += "-" + units[u]
+    elif n > 0:
+        result += units[n]
+    return result.strip()
+
+def montant_lettres(val):
+    try:
+        n = int(re.sub(r"[^\d]", "", val))
+        return nombre_en_lettres(n) + " dirhams"
+    except:
+        return val
+
+def remplacer_pointilles(texte, valeur):
+    """Remplace les pointillés dans le texte par la valeur"""
+    return re.sub(PATTERN_BLANC, valeur, texte)
+
+def traiter_span(texte_span, infos, bailleur_count):
+    """Retourne le nouveau texte du span ou None si on ne touche pas"""
+    
+    # Déterminer le nom selon le contexte bailleur/locataire
+    proprietaire = infos.get("Propriétaire", "")
+    locataire = infos.get("Locataire", "")
+    adresse = infos.get("Adresse du bien", "")
+    loyer = infos.get("Loyer mensuel (DH)", "")
+    duree = infos.get("Durée du contrat", "")
+    date_debut = infos.get("Date de début", "")
+    date_fin = infos.get("Date de fin", "")
+
+    # Span 1&2 : M, Mme, Mlle (bailleur ou locataire)
+    if re.search(r"M, Mme, Mlle[….]+Né \(e\) le", texte_span):
+        nom = proprietaire if bailleur_count == 0 else locataire
+        if nom:
+            # Remplacer uniquement les premiers pointillés (avant "Né")
+            nouveau = re.sub(r'(?<=Mlle)[….]+(?=Né)', f" {nom} ", texte_span)
+            return nouveau
+        return None
+
+    # Demeurant à → laisser intact
+    if re.search(r"Demeurant à[….]+", texte_span):
+        return None
+
+    # Adresse du bien (span seul = que des pointillés)
+    if re.fullmatch(r'[….]+\s*', texte_span.strip()):
+        if adresse:
+            return adresse
+        return None
+
+    # Bâtiment/étage → laisser intact
+    if re.search(r"Bâtiment[….]+étage", texte_span):
+        return None
+
+    # Article 4 : durée + date début
+    if re.search(r"durée de [….]+ans à courir le[….]+et", texte_span):
+        nouveau = texte_span
+        if duree:
+            nouveau = re.sub(r'(?<=durée de )[….]+(?=ans)', duree + " ", nouveau)
+        if date_debut:
+            nouveau = re.sub(r'(?<=courir le)[….]+(?=et)', " " + date_debut + " ", nouveau)
+        return nouveau if nouveau != texte_span else None
+
+    # Date de fin
+    if re.search(r"terminant le [….]+sous réserve", texte_span):
+        if date_fin:
+            return re.sub(r'(?<=terminant le )[….]+(?=sous)', date_fin + " ", texte_span)
+        return None
+
+    # Loyer mensuel
+    if re.search(r"somme de [….]+DH au locataire", texte_span):
+        if loyer:
+            return re.sub(r'(?<=somme de )[….]+(?=DH)', loyer + " ", texte_span)
+        return None
+
+    # Loyer en toutes lettres
+    if re.search(r"en toutes lettres\)[….]+", texte_span):
+        if loyer:
+            return re.sub(r'(?<=lettres\))[….]+', montant_lettres(loyer), texte_span)
+        return None
+
+    # Garantie → laisser intact
+    if re.search(r"garantie versé.*[….]+DH", texte_span):
+        return None
+
+    return None
+
+@app.post("/remplir-pdf")
+async def remplir_pdf(
+    fichier: UploadFile = File(...),
+    infos: str = Form(...),
+    groq_key: str = Form(default="")
+):
+    infos_dict = json.loads(infos)
+    contenu = await fichier.read()
+    doc = fitz.open(stream=contenu, filetype="pdf")
+
+    bailleur_count = 0  # 0=avant bailleur, 1=dans locataire
+
+    for page_num in range(len(doc)):
+        page = doc[page_num]
+        blocks = page.get_text("dict")["blocks"]
+
+        for block in blocks:
+            if "lines" not in block: continue
+            for line in block["lines"]:
+                ligne_texte = " ".join(s["text"] for s in line["spans"])
+
+                # Détecter contexte bailleur/locataire
+                if "CI- APRES DENOMME, LE BAILLEUR" in ligne_texte or "CI-APRES DENOMME, LE BAILLEUR" in ligne_texte:
+                    bailleur_count = 1
+                elif "CI- APRES DENOMME, LE LOCATAIRE" in ligne_texte or "CI-APRES DENOMME, LE LOCATAIRE" in ligne_texte:
+                    bailleur_count = 2
+
+                for span in line["spans"]:
+                    texte = span["text"]
+
+                    if not re.search(PATTERN_BLANC, texte):
+                        continue
+
+                    nouveau_texte = traiter_span(texte, infos_dict, 
+                        0 if bailleur_count < 2 else 1)
+
+                    if nouveau_texte is None or nouveau_texte == texte:
+                        continue
+
+                    print(f"REMPLACE: '{texte[:50]}' → '{nouveau_texte[:50]}'")
+
+                    rect = fitz.Rect(span["bbox"])
+                    fontsize = span["size"]
+
+                    # Effacer
+                    page.draw_rect(rect, color=(1,1,1), fill=(1,1,1))
+
+                    # Réécrire avec textbox pour gérer le débordement
+                    page.insert_textbox(
+                        rect,
+                        nouveau_texte,
+                        fontsize=fontsize,
+                        fontname="helv",
+                        color=(0, 0, 0),
+                        align=0
+                    )
+
+    output = io.BytesIO()
+    doc.save(output)
+    output.seek(0)
+    return StreamingResponse(
+        output,
+        media_type="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=document_rempli.pdf"}
+    )
+
+@app.get("/")
+def root():
+    return {"status": "ok", "message": "LegalDoc-AI Backend v5 — pattern matching"}

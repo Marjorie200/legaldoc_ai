@@ -1,0 +1,102 @@
+/* ============================================
+   DOCUMENT SIMPLIFIÉ — Styles globaux
+   ============================================ */
+
+/* Import d'une police moderne et élégante */
+@import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700&family=Inter:wght@300;400;500&display=swap');
+
+/* Variables CSS — toutes les couleurs et tailles en un seul endroit */
+:root {
+  --bg-main: #080810;
+  --bg-card: #10101a;
+  --bg-card-hover: #14142000;
+  --bg-input: #0a0a14;
+  --accent: #7c6fee;
+  --accent-light: #9d8fff;
+  --accent-dim: #1e1b3a;
+  --accent-border: #3d3580;
+  --text-primary: #f0f0fa;
+  --text-secondary: #8888aa;
+  --text-muted: #3a3a55;
+  --border: #1e1e30;
+  --border-hover: #3a3a55;
+  --success: #4caf7d;
+  --radius: 16px;
+  --radius-sm: 10px;
+}
+
+/* Reset de base */
+*, *::before, *::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: 'Inter', sans-serif;
+  background: var(--bg-main);
+  color: var(--text-primary);
+  min-height: 100vh;
+  /* Grille de fond subtile pour donner de la texture */
+  background-image: radial-gradient(circle at 20% 20%, #1a1040 0%, transparent 50%),
+                    radial-gradient(circle at 80% 80%, #0d1a30 0%, transparent 50%);
+}
+
+/* ============================================
+   ANIMATIONS
+   ============================================ */
+
+/* Apparition en fondu depuis le bas */
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Pulsation douce pour les éléments actifs */
+@keyframes pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(124, 111, 238, 0.3); }
+  50%       { box-shadow: 0 0 0 8px rgba(124, 111, 238, 0); }
+}
+
+/* Rotation pour le loader */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+/* Clignotement du curseur dans l'aperçu */
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
+}
+
+/* Apparition progressive du texte généré */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* ============================================
+   COMPOSANTS DE BASE
+   ============================================ */
+
+/* Scrollbar personnalisée */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--accent-border); border-radius: 2px; }
+
+/* Sélection de texte */
+::selection { background: var(--accent); color: white; }
+
+/* Inputs globaux */
+input, textarea {
+  font-family: 'Inter', sans-serif;
+}
+
+input:focus, textarea:focus {
+  outline: none;
+}
